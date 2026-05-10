@@ -1,6 +1,6 @@
-
 #define BAR_HEIGHT 20
 
+// \/ Colors defined as string of "#RRGGBBAA" in hex
 #define BG_COLOR "#1E1E2EE0"
 #define FG_COLOR "#CDD6F4FF"
 

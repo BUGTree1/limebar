@@ -17,6 +17,12 @@ typedef struct {
     int height;
 } Monitor;
 
+typedef struct {
+    Window window;
+    Atom atom;
+    XftDraw* draw;
+} Bar;
+
 void error(const char* msg) {
     fprintf(stderr, "[ERROR] %s\n", msg);
     exit(1);
@@ -61,51 +67,49 @@ int main(int argc, char** argv) {
     int monitor_count;
     Monitor* monitors;
     query_monitors(display, root, &monitor_count, &monitors);
+    
+    Visual* visual = DefaultVisual(display, 0);
+    Colormap cmap = DefaultColormap(display, 0);
 
-    Window windows[monitor_count];
-    Atom atoms[monitor_count];
+    XftFont* font = XftFontOpenName(display, 0, FONT);
+    if(font == NULL) error("Could not load font!");
+
+    // TODO: parse colors
+    XRenderColor rc = {0xffff, 0x0000, 0x0000, 0xffff};
+    XftColor color;
+    XftColorAllocValue(display, visual, cmap, &rc, &color);
+
+    Bar bars[monitor_count];
 
     for (int i = 0; i < monitor_count; i++) {
-        windows[i] = XCreateSimpleWindow(display, root, 0, 0, monitors[i].width, BAR_HEIGHT, 0, 0, 0xffffffff);
-        if (windows[i] == None) error("Failed to create window!");
+        bars[i].window = XCreateSimpleWindow(display, root, 0, 0, monitors[i].width, BAR_HEIGHT, 0, 0, 0xffffffff);
+        if (bars[i].window == None) error("Failed to create window!");
         
         XSetWindowAttributes attr = {0};
         attr.override_redirect = true;
-        XChangeWindowAttributes(display, windows[i], CWOverrideRedirect, &attr);
+        attr.event_mask = ExposureMask;
+        XChangeWindowAttributes(display, bars[i].window, CWOverrideRedirect | CWEventMask, &attr);
 
         const char* base_window_name = "limebar ";
         size_t window_name_size = strlen(base_window_name) + 3;
         char* window_name = malloc(window_name_size);
         snprintf(window_name, window_name_size, "limebar %d", i);
-        XStoreName(display, windows[i], window_name);
+        XStoreName(display, bars[i].window, window_name);
+        free(window_name);
 
-        XMapWindow(display, windows[i]);
+        XMapWindow(display, bars[i].window);
         
-        atoms[i] = XInternAtom(display, "WM_DELETE_WINDOW", False);
-        XSetWMProtocols(display, windows[i], &(atoms[i]), 1);
+        bars[i].atom = XInternAtom(display, "WM_DELETE_WINDOW", False);
+        XSetWMProtocols(display, bars[i].window, &(bars[i].atom), 1);
         
-        XMoveWindow(display, windows[i], monitors[i].x, monitors[i].y);
+        XMoveWindow(display, bars[i].window, monitors[i].x, monitors[i].y);
     
-        Visual *visual = DefaultVisual(display, i);
-        Colormap cmap = DefaultColormap(display, i);
-        
-        XftDraw *draw = XftDrawCreate(display, windows[i], visual, cmap);
-        if(draw == NULL) error("Could not create xft draw!");
-
-        XftFont *font = XftFontOpenName(display, i, FONT);
-        if(font == NULL) error("Could not load font!");
-
-        XRenderColor rc = {0xffff, 0x0000, 0x0000, 0xffff}; // red
-        XftColor color;
-        XftColorAllocValue(display, visual, cmap, &rc, &color);
-        printf("HELP ME\n");
-        
-        XftDrawStringUtf8(draw, &color, font, 20, 40, (const FcChar8 *)"Hello, Xft", 10);
-
-        XftColorFree(display, visual, cmap, &color);
-        XftFontClose(display, font);
-        XftDrawDestroy(draw);
+        bars[i].draw = XftDrawCreate(display, bars[i].window, visual, cmap);
+        if(bars[i].draw == NULL) error("Could not create xft draw!");
     }
+
+    const char* bar_text = "Hello";
+    size_t bar_text_len = strlen(bar_text);
 
     int run = monitor_count;
     XEvent event;
@@ -113,11 +117,18 @@ int main(int argc, char** argv) {
         XNextEvent(display, &event);
 
         switch(event.type) {
+        case Expose:
+            for (int i = 0; i < monitor_count; i++) {
+                if (event.xexpose.window == bars[i].window) {
+                    XftDrawStringUtf8(bars[i].draw, &color, font, 0, font->ascent, (const FcChar8 *)bar_text, bar_text_len);
+                }
+            }
+            break;
         case ClientMessage:
             for(int i = 0; i < monitor_count; i++){
-                if(event.xclient.window == windows[i]) {
-                    if((unsigned long)event.xclient.data.l[0] == atoms[i]) {
-                        XDestroyWindow(display, windows[i]);
+                if(event.xclient.window == bars[i].window) {
+                    if((unsigned long)event.xclient.data.l[0] == bars[i].atom) {
+                        XDestroyWindow(display, bars[i].window);
                         run--;
                         break;
                     }
@@ -126,8 +137,6 @@ int main(int argc, char** argv) {
             break;
         }
     }
-
-    XCloseDisplay(display);
 
     return 0;
 }
