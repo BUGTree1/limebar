@@ -1,3 +1,4 @@
 TODO:
+- argument to list fonts
 - add posix signals (SIGRTMIN + 1 with data integer that has the block to signal)
 - add executable that sends the bar a requested (from arguments) signal

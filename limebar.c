@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
@@ -26,6 +27,52 @@ typedef struct {
 void error(const char* msg) {
     fprintf(stderr, "[ERROR] %s\n", msg);
     exit(1);
+}
+
+uint8_t parse_char_hex(char ch) {
+    switch(ch) {
+        case '0': return 0x0; break;
+        case '1': return 0x1; break;
+        case '2': return 0x2; break;
+        case '3': return 0x3; break;
+        case '4': return 0x4; break;
+        case '5': return 0x5; break;
+        case '6': return 0x6; break;
+        case '7': return 0x7; break;
+        case '8': return 0x8; break;
+        case '9': return 0x9; break;
+        case 'A': return 0xA; break;
+        case 'B': return 0xB; break;
+        case 'C': return 0xC; break;
+        case 'D': return 0xD; break;
+        case 'E': return 0xE; break;
+        case 'F': return 0xF; break;
+        case 'a': return 0xa; break;
+        case 'b': return 0xb; break;
+        case 'c': return 0xc; break;
+        case 'd': return 0xd; break;
+        case 'e': return 0xe; break;
+        case 'f': return 0xf; break;
+        default: error("Character not in hex!"); break;
+    }
+}
+
+uint8_t parse_byte_hex(const char* text) {
+    return parse_char_hex(text[0]) * 16 + parse_char_hex(text[1]);
+}
+
+XRenderColor parse_color(const char* text) {
+    const char* example_text = "#11223344";
+    if(strlen(text) != strlen(example_text)) {
+        error("Wrong color lenght! Colors are in format '#RRGGBBAA' hex!");
+    }
+    if(text[0] != '#') error("Wrong color text! Colors are in format '#RRGGBBAA' hex!");
+    XRenderColor color = {0};
+    color.red   = parse_byte_hex(text + 1 + (0 * 2));
+    color.green = parse_byte_hex(text + 1 + (1 * 2));
+    color.blue  = parse_byte_hex(text + 1 + (2 * 2));
+    color.alpha = parse_byte_hex(text + 1 + (3 * 2));
+    return color;
 }
 
 void query_monitors(Display* display, Window root, int* monitors_count, Monitor** monitors){
@@ -74,10 +121,12 @@ int main(int argc, char** argv) {
     XftFont* font = XftFontOpenName(display, 0, FONT);
     if(font == NULL) error("Could not load font!");
 
-    // TODO: parse colors
-    XRenderColor rc = {0xffff, 0x0000, 0x0000, 0xffff};
-    XftColor color;
-    XftColorAllocValue(display, visual, cmap, &rc, &color);
+    XRenderColor fg_rc = parse_color(FG_COLOR);
+    XftColor fg_color;
+    XftColorAllocValue(display, visual, cmap, &fg_rc, &fg_color);
+    XRenderColor bg_rc = parse_color(BG_COLOR);
+    XftColor bg_color;
+    XftColorAllocValue(display, visual, cmap, &bg_rc, &bg_color);
 
     Bar bars[monitor_count];
 
@@ -120,7 +169,9 @@ int main(int argc, char** argv) {
         case Expose:
             for (int i = 0; i < monitor_count; i++) {
                 if (event.xexpose.window == bars[i].window) {
-                    XftDrawStringUtf8(bars[i].draw, &color, font, 0, font->ascent, (const FcChar8 *)bar_text, bar_text_len);
+                    // \/ WTF?
+                    printf("COL: %lu\n", fg_color.pixel);
+                    XftDrawStringUtf8(bars[i].draw, &fg_color, font, 0, font->ascent, (const FcChar8 *)bar_text, bar_text_len);
                 }
             }
             break;
