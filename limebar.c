@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #include <signal.h>
 #include <time.h>
@@ -13,8 +14,9 @@
 
 #include "config.h"
 
-#define UNREACHABLE() do { fprintf(stderr, "[ERROR] UNREACHABLE REACHED AT %s:%d:\n", __FILE__, __LINE__); exit(1); } while(0)
+#define UNUSED(val) (void)(val)
 #define ARR_COUNT(arr) (sizeof(arr) / sizeof(arr[0]))
+#define UNREACHABLE() do { fprintf(stderr, "[ERROR] UNREACHABLE REACHED AT %s:%d:\n", __FILE__, __LINE__); exit(1); } while(0)
 
 typedef struct {
     int x;
@@ -29,9 +31,21 @@ typedef struct {
 } Bar;
 
 typedef struct {
-	struct sigevent* event;
-	timer_t* id;
+	timer_t id;
 } Timer_Data;
+
+typedef struct {
+    void** blocks_data;
+    char** blocks_text;
+    Timer_Data* timers_data;
+    char** bar_text;
+    size_t* bar_text_len;
+} Bar_State;
+
+typedef struct {
+    Bar_State* state;
+    size_t idx;
+} Block_Timer_Data;
 
 unsigned short usclamp(unsigned short d, unsigned short min, unsigned short max) {
   const unsigned short t = d < min ? min : d;
@@ -118,6 +132,67 @@ void query_monitors(Display* display, Window root, int* monitors_count, Monitor*
         XRRFreeOutputInfo (output_info);
     }
     XRRFreeScreenResources(xrr_res);
+}
+
+void update_block(Bar_State* state, size_t block_idx){
+    char* new_text = blocks[block_idx].display(state->blocks_data[block_idx]);
+    size_t new_text_len = strlen(new_text);
+    printf("UPDATE: %s | %lu  to  %s\n", *(state->bar_text), block_idx, new_text);
+    if(*(state->bar_text_len) != new_text_len) {
+        // TODO: get the old text position and lenght for this block.
+        // TODO: malloc new bar. memcpy text before this block then new_text then text after this block.
+        //malloc();
+    } else {
+
+    }
+    //memcpy((void*)((*state->bar_text) + smth), state->blocks_text[i], strlen(state->blocks_text[i]) + 1);
+}
+
+void block_timer_expired(int sig, siginfo_t *si, void *uc){
+    UNUSED(sig);
+    UNUSED(uc);
+    Block_Timer_Data* data = si->_sifields._rt.si_sigval.sival_ptr;
+    update_block(data->state, data->idx);
+}
+
+void update_blocks(Bar_State* state) {
+    (*state->bar_text_len) = 0;
+    for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
+        if(blocks[i].init != NULL) state->blocks_data[i] = blocks[i].init();
+        if(blocks[i].interval != 0.f) {
+            time_t int_sec  = floor(blocks[i].interval);
+            time_t int_nsec = (blocks[i].interval - floor(blocks[i].interval)) * 1000000000;
+            struct itimerspec its = {{int_sec,int_nsec},{int_sec,int_nsec}};
+            struct sigevent event = {0};
+            struct sigaction sa = {0};
+            event.sigev_notify = SIGEV_SIGNAL;
+            event.sigev_signo = SIGRTMIN;
+            Block_Timer_Data* timer_data = malloc(sizeof(Block_Timer_Data));
+            timer_data->state = state;
+            timer_data->idx = i;
+            event.sigev_value.sival_ptr = timer_data;
+            timer_create(CLOCK_MONOTONIC, &event, &state->timers_data[i].id);
+            sa.sa_flags = SA_SIGINFO;
+            sa.sa_sigaction = block_timer_expired;
+            sigemptyset(&sa.sa_mask);
+            sigaction(SIGRTMIN, &sa, NULL);
+            timer_settime(state->timers_data[i].id, 0, &its, NULL);
+        }
+        if(blocks[i].display != NULL) {
+            state->blocks_text[i] = blocks[i].display(state->blocks_data[i]);
+            (*state->bar_text_len) += strlen(state->blocks_text[i]);
+        }
+    }
+
+    if((*state->bar_text) == NULL){
+        (*state->bar_text) = malloc((*state->bar_text_len) + 1);
+    }
+    
+    size_t progress = 0;
+    for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
+        memcpy((void*)((*state->bar_text) + progress), state->blocks_text[i], strlen(state->blocks_text[i]) + 1);
+        progress += strlen(state->blocks_text[i]);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -212,17 +287,13 @@ int main(int argc, char** argv) {
         if(bars[i].draw == NULL) error("%d: Could not create xft draw!", bars[i].draw);
     }
 
-    clockid_t clockid = CLOCK_MONOTONIC;
-
     Timer_Data timers_data[ARR_COUNT(blocks)];
     void* blocks_data[ARR_COUNT(blocks)];
-    for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
-        if(blocks[i].block_init != NULL) blocks_data[i] = blocks[i].block_init();
-        //if(blocks[i].interval != 0.f) timer_create(clockid, timers_data[i].event, timers_data[i].id);
-    }
-
-    const char* bar_text = "Hello"; // TODO: malloc a string with size of all blocks combined and memcpy them to it.
-    size_t bar_text_len = strlen(bar_text);
+    char* blocks_text[ARR_COUNT(blocks)];
+    char* bar_text = NULL;
+    size_t bar_text_len = 0;
+    Bar_State state = {blocks_data, blocks_text, timers_data, &bar_text, &bar_text_len};
+    update_blocks(&state);
 
     int run = monitor_count;
     XEvent event;

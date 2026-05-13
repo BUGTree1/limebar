@@ -1,3 +1,13 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+#include <signal.h>
+#include <time.h>
+
 #define BAR_HEIGHT 20
 
 // \/ Colors defined as string of "#RRGGBBAA" in hex
@@ -7,10 +17,10 @@
 #define FONT "Hack Nerd Font Mono:style=Bold:size=10"
 
 typedef struct {
-    void* (*block_init)();
-    char* (*block_display)(void*);
-    void (*block_click)(void*);
-    void (*block_deinit)(void*);
+    void* (*init)();
+    char* (*display)(void*); // The returned string has to be null terminated!
+    void (*click)(void*);
+    void (*deinit)(void*);
     float interval;
 } Block;
 
@@ -20,31 +30,31 @@ void  block_time_click(void*);
 void  block_time_deinit(void*);
 
 static Block blocks[] = {
-    {block_time_init, block_time_display, block_time_click, block_time_deinit,  1.0f}
+    {block_time_init, block_time_display, block_time_click, block_time_deinit,  0.5f},
 };
 
 // \/ Implementations
 
+typedef struct {
+    char* text;
+    time_t now;
+} Block_Time;
 void* block_time_init() {
-    // "12:43:21" -> 8 char + \0
-    return malloc(9 * sizeof(char));
+    // "ddd yyyy-mm-dd hh:mm:ss" -> 23 char + \0
+    Block_Time* data = malloc(sizeof(Block_Time));
+    data->text = malloc(24 * sizeof(char));
+    return data;
 }
 char* block_time_display(void* data) {
-    char* data_text = (char*)data;
-    double since_epoch  = (double)time(NULL);
-    uint8_t hours   = ((uint8_t)floor(since_epoch / 3600.0)) % 25;
-    uint8_t minutes = ((uint8_t)floor(since_epoch / 60.0)  ) % 61;
-    uint8_t seconds = ((uint8_t)floor(since_epoch)         ) % 61;
-    sprintf(data_text + 0, "%d", hours);
-    *(data_text + 2) = ':';
-    sprintf(data_text + 3, "%d", minutes);
-    *(data_text + 5) = ':';
-    sprintf(data_text + 6, "%d", seconds);
-    *(data_text + 8) = '\0';
-    return data_text;
+    Block_Time* time_data = data;
+    time(&time_data->now);
+    struct tm* lt = localtime(&time_data->now);
+    strftime(time_data->text, 24, "%a %Y-%m-%d %H:%M:%S %Z", lt);
+    return time_data->text;
 }
 void  block_time_click(void* data) {
 }
 void  block_time_deinit(void* data) {
+    free(((Block_Time*)data)->text);
     free(data);
 }
