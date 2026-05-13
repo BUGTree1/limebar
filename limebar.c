@@ -35,11 +35,27 @@ typedef struct {
 } Timer_Data;
 
 typedef struct {
+    Display* display;
+    Window root;
+    XVisualInfo vinfo;
+    Colormap cmap;
+    XftFont* font;
+
+    XRenderColor fg_rc;
+    XftColor fg_color;
+    XRenderColor bg_rc;
+    XftColor bg_color;
+
+    int monitor_count;
+    Monitor* monitors;
+    Bar* bars;
+
     void** blocks_data;
     char** blocks_text;
+    size_t* blocks_text_len;
     Timer_Data* timers_data;
-    char** bar_text;
-    size_t* bar_text_len;
+    char* bar_text;
+    size_t bar_text_len;
 } Bar_State;
 
 typedef struct {
@@ -134,18 +150,39 @@ void query_monitors(Display* display, Window root, int* monitors_count, Monitor*
     XRRFreeScreenResources(xrr_res);
 }
 
+void draw_bar(Bar_State* state, int window_idx) {
+    Picture pict = XftDrawPicture(state->bars[window_idx].draw);
+    if (pict == None) error("Could not get the draw picture!");
+    XRenderFillRectangle(state->display, PictOpSrc, pict, &state->bg_rc, 0, 0, state->monitors[window_idx].width, BAR_HEIGHT);
+    XftDrawStringUtf8(state->bars[window_idx].draw, &state->fg_color, state->font, 0, state->font->ascent, (const FcChar8 *)state->bar_text, state->bar_text_len);
+    XFlush(state->display);
+}
+
+void update_bar_text(Bar_State* state) {
+    size_t progress = 0;
+    for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
+        memcpy((void*)(state->bar_text + progress), state->blocks_text[i], state->blocks_text_len[i] + 1);
+        progress += state->blocks_text_len[i];
+    }
+}
+
 void update_block(Bar_State* state, size_t block_idx){
     char* new_text = blocks[block_idx].display(state->blocks_data[block_idx]);
     size_t new_text_len = strlen(new_text);
-    printf("UPDATE: %s | %lu  to  %s\n", *(state->bar_text), block_idx, new_text);
-    if(*(state->bar_text_len) != new_text_len) {
-        // TODO: get the old text position and lenght for this block.
-        // TODO: malloc new bar. memcpy text before this block then new_text then text after this block.
-        //malloc();
+    
+    // TODO: \/ Can be optimized to memcpy text before this block, memcpy this block text, memcpy text after this block
+    if(state->blocks_text_len[block_idx] != new_text_len) {
+        char* new_bar_text = malloc((state->bar_text_len - state->blocks_text_len[block_idx]) + new_text_len);
+        state->blocks_text_len[block_idx] = new_text_len;
+        update_bar_text(state);
     } else {
-
+        state->blocks_text[block_idx] = new_text;
+        update_bar_text(state);
     }
-    //memcpy((void*)((*state->bar_text) + smth), state->blocks_text[i], strlen(state->blocks_text[i]) + 1);
+
+    for (int i = 0; i < state->monitor_count; i++) {
+        draw_bar(state, i);
+    }
 }
 
 void block_timer_expired(int sig, siginfo_t *si, void *uc){
@@ -155,8 +192,7 @@ void block_timer_expired(int sig, siginfo_t *si, void *uc){
     update_block(data->state, data->idx);
 }
 
-void update_blocks(Bar_State* state) {
-    (*state->bar_text_len) = 0;
+void init_blocks(Bar_State* state) {
     for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
         if(blocks[i].init != NULL) state->blocks_data[i] = blocks[i].init();
         if(blocks[i].interval != 0.f) {
@@ -180,19 +216,16 @@ void update_blocks(Bar_State* state) {
         }
         if(blocks[i].display != NULL) {
             state->blocks_text[i] = blocks[i].display(state->blocks_data[i]);
-            (*state->bar_text_len) += strlen(state->blocks_text[i]);
+            state->blocks_text_len[i] = strlen(state->blocks_text[i]);
+            state->bar_text_len += state->blocks_text_len[i];
         }
     }
 
-    if((*state->bar_text) == NULL){
-        (*state->bar_text) = malloc((*state->bar_text_len) + 1);
+    if(state->bar_text == NULL){
+        state->bar_text = malloc(state->bar_text_len + 1);
     }
     
-    size_t progress = 0;
-    for(size_t i = 0; i < ARR_COUNT(blocks); i++) {
-        memcpy((void*)((*state->bar_text) + progress), state->blocks_text[i], strlen(state->blocks_text[i]) + 1);
-        progress += strlen(state->blocks_text[i]);
-    }
+    update_bar_text(state);
 }
 
 int main(int argc, char** argv) {
@@ -200,121 +233,112 @@ int main(int argc, char** argv) {
     (void) argv;
     int ret = 0;
 
+    Bar_State* state = malloc(sizeof(Bar_State));
+
     char* display_name = getenv("DISPLAY");
+    state->display = XOpenDisplay(display_name);
+    if (state->display == NULL) error("%p: Failed to open display!", state->display);
 
-    Display* display = XOpenDisplay(display_name);
-    if (display == NULL) error("%p: Failed to open display!", display);
-
-    Window root = DefaultRootWindow(display);
-    if (root == None) error("%lu: No root window found!", root);
+    state->root = DefaultRootWindow(state->display);
+    if (state->root == None) error("%lu: No root window found!", state->root);
     
-    int monitor_count;
-    Monitor* monitors;
-    query_monitors(display, root, &monitor_count, &monitors);
+    query_monitors(state->display, state->root, &state->monitor_count, &state->monitors);
     
     XVisualInfo vinfo_template = {0};
     vinfo_template.screen = 0;
     vinfo_template.depth = 32;
     vinfo_template.class = TrueColor;
     int vinfo_count = 0;
-    XVisualInfo* vinfo_arr = XGetVisualInfo(display, VisualScreenMask | VisualDepthMask | VisualClassMask, &vinfo_template, &vinfo_count);
+    XVisualInfo* vinfo_arr = XGetVisualInfo(state->display, VisualScreenMask | VisualDepthMask | VisualClassMask, &vinfo_template, &vinfo_count);
     if (!vinfo_arr) error("No 32bit TrueColor visuals found!");
-    XVisualInfo vinfo = {0};
     XRenderPictFormat* fmt;
     for (int i = 0; i < vinfo_count; i++) {
-        fmt = XRenderFindVisualFormat(display, vinfo_arr[i].visual);
+        fmt = XRenderFindVisualFormat(state->display, vinfo_arr[i].visual);
         if (fmt && fmt->type == PictTypeDirect && fmt->direct.alphaMask) {
-            vinfo = vinfo_arr[i];
+            state->vinfo = vinfo_arr[i];
             break;
         }
     }
-    if (vinfo.visual == NULL) error("Could not find any visual with alpha!");
-    Colormap cmap = {0};
-    cmap = XCreateColormap(display, root, vinfo.visual, AllocNone);
-    if (cmap == 0) error("Could not create the colormap!");
+    if (state->vinfo.visual == NULL) error("Could not find any visual with alpha!");
 
-    XftFont* font = XftFontOpenName(display, 0, FONT);
-    if(font == NULL) error("%p: Could not load font!", font);
+    state->cmap = XCreateColormap(state->display, state->root, state->vinfo.visual, AllocNone);
+    if (state->cmap == 0) error("Could not create the colormap!");
 
-    XRenderColor fg_rc = parse_color(FG_COLOR);
-    XftColor fg_color;
-    ret = XftColorAllocValue(display, vinfo.visual, cmap, &fg_rc, &fg_color);
+    state->font = XftFontOpenName(state->display, 0, FONT);
+    if(state->font == NULL) error("%p: Could not load font!", state->font);
+
+    state->fg_rc = parse_color(FG_COLOR);
+    ret = XftColorAllocValue(state->display, state->vinfo.visual, state->cmap, &state->fg_rc, &state->fg_color);
     if(ret != True) error("%d: Could not allocate color!", ret);
-    XRenderColor bg_rc = parse_color(BG_COLOR);
-    XftColor bg_color;
-    ret = XftColorAllocValue(display, vinfo.visual, cmap, &bg_rc, &bg_color);
+    state->bg_rc = parse_color(BG_COLOR);
+    ret = XftColorAllocValue(state->display, state->vinfo.visual, state->cmap, &state->bg_rc, &state->bg_color);
     if(ret != True) error("%d: Could not allocate color!", ret);
     
     Atom atom_destroy;
     Atom atom_type;
     Atom atom_type_dock;
     Atom atom_strut;
-    atom_destroy = XInternAtom(display, "WM_DELETE_WINDOW", False);
-    atom_type = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
-    atom_type_dock = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DOCK", False);
-    atom_strut = XInternAtom(display, "_NET_WM_STRUT", False);
+    atom_destroy   = XInternAtom(state->display, "WM_DELETE_WINDOW",         False);
+    atom_type      = XInternAtom(state->display, "_NET_WM_WINDOW_TYPE",      False);
+    atom_type_dock = XInternAtom(state->display, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    atom_strut     = XInternAtom(state->display, "_NET_WM_STRUT",            False);
 
-    Bar bars[monitor_count];
-    for (int i = 0; i < monitor_count; i++) {
+    state->bars = malloc(state->monitor_count * sizeof(Bar));
+    for (int i = 0; i < state->monitor_count; i++) {
         XSetWindowAttributes attr = {0};
         attr.override_redirect = True;
         attr.event_mask = ExposureMask;
-        attr.colormap = cmap;
+        attr.colormap = state->cmap;
         attr.border_pixel = 0;
         attr.background_pixel = 0;
 
-        bars[i].window = XCreateWindow(display, root, 0, 0, monitors[i].width, BAR_HEIGHT, 0, vinfo.depth, InputOutput, vinfo.visual, CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWOverrideRedirect, &attr);
-        if (bars[i].window == None) error("%lu: Failed to create window!", bars[i].window);
+        state->bars[i].window = XCreateWindow(state->display, state->root, 0, 0, state->monitors[i].width, BAR_HEIGHT, 0, state->vinfo.depth, InputOutput, state->vinfo.visual, CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWOverrideRedirect, &attr);
+        if (state->bars[i].window == None) error("%lu: Failed to create window!", state->bars[i].window);
 
         const char* base_window_name = "limebar ";
         size_t window_name_size = strlen(base_window_name) + 3;
         char* window_name = malloc(window_name_size);
         snprintf(window_name, window_name_size, "limebar %d", i);
-        XStoreName(display, bars[i].window, window_name);
+        XStoreName(state->display, state->bars[i].window, window_name);
         free(window_name);
 
-        XChangeProperty(display, bars[i].window, atom_type, XA_ATOM, 32, PropModeReplace, (unsigned char *)&atom_type_dock, 1);
+        XChangeProperty(state->display, state->bars[i].window, atom_type, XA_ATOM, 32, PropModeReplace, (unsigned char *)&atom_type_dock, 1);
         unsigned long strut[4] = {0, 0, BAR_HEIGHT, 0};
-        XChangeProperty(display, bars[i].window, atom_strut, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)strut, 4);
+        XChangeProperty(state->display, state->bars[i].window, atom_strut, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)strut, 4);
         
-        XSetWMProtocols(display, bars[i].window, &atom_destroy, 1);
+        XSetWMProtocols(state->display, state->bars[i].window, &atom_destroy, 1);
 
-        XMapWindow(display, bars[i].window);
+        XMapWindow(state->display, state->bars[i].window);
         
-        XMoveWindow(display, bars[i].window, monitors[i].x, monitors[i].y);
+        XMoveWindow(state->display, state->bars[i].window, state->monitors[i].x, state->monitors[i].y);
     
-        bars[i].draw = XftDrawCreate(display, bars[i].window, vinfo.visual, cmap);
-        if(bars[i].draw == NULL) error("%d: Could not create xft draw!", bars[i].draw);
+        state->bars[i].draw = XftDrawCreate(state->display, state->bars[i].window, state->vinfo.visual, state->cmap);
+        if(state->bars[i].draw == NULL) error("%d: Could not create xft draw!", state->bars[i].draw);
     }
 
-    Timer_Data timers_data[ARR_COUNT(blocks)];
-    void* blocks_data[ARR_COUNT(blocks)];
-    char* blocks_text[ARR_COUNT(blocks)];
-    char* bar_text = NULL;
-    size_t bar_text_len = 0;
-    Bar_State state = {blocks_data, blocks_text, timers_data, &bar_text, &bar_text_len};
-    update_blocks(&state);
+    state->timers_data     = malloc(ARR_COUNT(blocks) * sizeof(Timer_Data*));
+    state->blocks_data     = malloc(ARR_COUNT(blocks) * sizeof(void**));
+    state->blocks_text     = malloc(ARR_COUNT(blocks) * sizeof(char**));
+    state->blocks_text_len = malloc(ARR_COUNT(blocks) * sizeof(size_t*));
+    init_blocks(state);
 
-    int run = monitor_count;
+    int run = state->monitor_count;
     XEvent event;
     while (run > 0) {
-        XNextEvent(display, &event);
+        XNextEvent(state->display, &event);
         switch(event.type) {
         case Expose:
-            for (int i = 0; i < monitor_count; i++) {
-                if (event.xexpose.window == bars[i].window) {
-                    Picture pict = XftDrawPicture(bars[i].draw);
-                    if (pict == None) error("Could not get the draw picture!");
-                    XRenderFillRectangle(display, PictOpSrc, pict, &bg_rc, 0, 0, monitors[i].width, BAR_HEIGHT);
-                    XftDrawStringUtf8(bars[i].draw, &fg_color, font, 0, font->ascent, (const FcChar8 *)bar_text, bar_text_len);
+            for (int i = 0; i < state->monitor_count; i++) {
+                if (event.xexpose.window == state->bars[i].window) {
+                    draw_bar(state, i);
                 }
             }
             break;
         case ClientMessage:
-            for(int i = 0; i < monitor_count; i++){
-                if(event.xclient.window == bars[i].window) {
+            for(int i = 0; i < state->monitor_count; i++){
+                if(event.xclient.window == state->bars[i].window) {
                     if((unsigned long)event.xclient.data.l[0] == atom_destroy) {
-                        XDestroyWindow(display, bars[i].window);
+                        XDestroyWindow(state->display, state->bars[i].window);
                         run--;
                         break;
                     }
